@@ -49,24 +49,25 @@ function retrieve(response) {
 		data += chunk;
 	});
 	response.on('end', function() {
-		var regex = /a\s*href="([^"]+)"/ig;
+		var regex = /a\s*href=(?:"([^"]+)"|'([^']+)')/ig;
 		var url = '';
 		while (url = regex.exec(data)) {
-			if (url[1] == '#') {
+			url = url[1] ? url[1] : url[2];
+			if (url == '#') {
 				continue;
 			}
-			else if (url[1].charAt(0) == '/') {
+			else if (url.charAt(0) == '/') {
 				continue;
-				url[1] = domain + url[1].substring(1);
+				url = domain + url.substring(1);
 			}
 			var included = false;
 			for (var i = 0; i < domain.length; i++) {
-				if (url[1].substring(0, domain[i].length) == domain[i]) {
+				if (url.substring(0, domain[i].length) == domain[i]) {
 					included = true;
 				}
 			}
 			if (!included) continue;
-			crawl(url[1]);
+			crawl(url);
 		}
 		numOpen--;
 		if (queue.length) {
