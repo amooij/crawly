@@ -83,13 +83,11 @@ function failure(e) {
 }
 
 if (cluster.isMaster) {
-	cluster.fork({'link' : 'http://staging.1001oyun.com'});
-	cluster.fork({'link' : 'http://staging.superspellen.nl'});
-	cluster.fork({'link' : 'http://staging.jeuxjeuxjeux.fr'});
-	cluster.fork({'link' : 'http://staging.gamepilot.com'});
-	cluster.fork({'link' : 'http://staging.spielyeti.de'});
-	cluster.fork({'link' : 'http://staging.megaspel.se'});
-	//cluster.fork({'link' : 'http://staging.trochoi.net'});
+	process.argv.forEach(function(arg, idx) {
+		if (idx > 0) {
+			cluster.fork({'link' : arg});
+		}
+	});
 	setInterval(function() { 
 		var queue;
 		counter = numComplete = numOpen = queue = 0;
