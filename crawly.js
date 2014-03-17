@@ -1,120 +1,139 @@
 #!/usr/local/bin/node
 
+
+/*
+	Possible features:
+	module structure to allow callbacks
+
+ */
+
 var http = require('http');
 var url = require('url');
-var cluster = require('cluster');
-var numCPUs = require('os').cpus().length;
 
-var status = [];
-var domain = [];
+var domain;
 var visited = [];
 var counter = 0;
-var counterMax = 50000;
-var numOpen = 0;
-var numComplete = 0;
+var counterMax = 100;
+var start = {};
+var speed = {};
+var pending = 0;
+var simultaneous = 20;
 var queue = [];
+var verbose = false;
+var redirects = 0;
+var errors = 0;
 
 function crawl(link, setDomain) {
 	if (visited.indexOf(link) != -1) return;
-	if (counter >= counterMax) return;
-	if (numOpen > 250) {
+	if (counter > counterMax) return;
+	if (pending >= simultaneous) {
 		queue.push(link);
 		return;
 	}
 
 	visited.push(link);
-	///console.log('GET', link);
+	if (verbose) {
+		console.log('GET', link);
+	}
 
 	var options = url.parse(link);
 	options.headers =  { 'User-Agent' : 'Crawly/0.1' };
 	if (setDomain) {
-		domain.push(options.protocol + '//' + options.host);
+		domain = options.protocol + '//' + options.host;
 	}
+	var d = new Date();
+	start[link] = (d.getTime());
+	pending++;
 	var request = http.request(options, retrieve);
 	request.on('error', failure);
 	request.end();
-	numOpen++;
 	counter++;
-	process.send({ pid : process.pid, numOpen : numOpen, counter : counter, numComplete : numComplete, queue : queue.length });
 }
 
 function retrieve(response) {
-	var requested = 'http://' + response.req._headers.host + response.req.path;
- 	response.setEncoding('utf8');
-	if (response.statusCode != 200) {
-		console.log(response.statusCode, requested);
-	}
+	var requested = 'http://' + response.req._headers.host + (response.req.path == '/' ? '' : response.req.path);
 	var data = '';
 	response.on('data', function(chunk) {
 		data += chunk;
 	});
 	response.on('end', function() {
-		var regex = /a\s*href=(?:"([^"]+)"|'([^']+)')/ig;
+		if (start[requested]) {
+			var d = new Date();
+			var time = (d.getTime()) - start[requested];
+			speed[requested] = time;
+			if (verbose || response.statusCode != 200) {
+				if (response.statusCode >= 300 && response.statusCode < 400) redirects++;
+				if (response.statusCode >= 400) errors++;
+				console.log(response.statusCode + ' ' + requested + ' ' + time + 'ms');
+			}
+			delete start[requested];
+		}
+		var regex = /a\s*href="([^"]+)"/ig;
 		var url = '';
 		while (url = regex.exec(data)) {
-			url = url[1] ? url[1] : url[2];
-			if (url == '#') {
+			if (url[1] == '#') {
 				continue;
 			}
-			else if (url.charAt(0) == '/') {
+			else if (url[1].substring(0, domain.length) != domain) {
 				continue;
-				url = domain + url.substring(1);
 			}
-			var included = false;
-			for (var i = 0; i < domain.length; i++) {
-				if (url.substring(0, domain[i].length) == domain[i]) {
-					included = true;
-				}
+			else if (url[1].charAt(0) == '/') {
+				url[1] = domain + url[1].substring(1);
 			}
-			if (!included) continue;
-			crawl(url);
+			url[1] = url[1].replace(/(.*)#.*/, '$1');
+			crawl(url[1]);
 		}
-		numOpen--;
-		if (queue.length) {
-			crawl(queue.shift());
+		if (!/<\/body>/i.exec(data)) {
+			console.log('Missing </body> for ' + requested);
+			errors++;
 		}
-		numComplete++;
-		process.send({ pid : process.pid, numOpen : numOpen, counter : counter, numComplete : numComplete, queue: queue.length });
+		dequeue();
+		if (pending == 0) {
+			printStatistics();
+		}
 	});
 }
 
 function failure(e) {
-	console.log('fail: ' + e, arguments);
+	console.log('fail: ' + e);
+	dequeue();
 }
 
-if (cluster.isMaster) {
-	process.argv.forEach(function(arg, idx) {
-		if (idx > 0) {
-			cluster.fork({'link' : arg});
-		}
-	});
-	setInterval(function() { 
-		var queue;
-		counter = numComplete = numOpen = queue = 0;
-		status.forEach(function(msg) {
-			counter += msg.counter;
-			numComplete += msg.numComplete;
-			numOpen += msg.numOpen;
-			queue += msg.queue;
-			console.log('pid', msg.pid, 'Total', msg.counter, 'Completed', msg.numComplete, 'Working', msg.numOpen, 'Queue', msg.queue) 
-		});
-		console.log('Total', counter, 'Completed', numComplete, 'Working', numOpen, 'Queue', queue) 
-	}, 1000);
+function dequeue() {
+	pending--;
+	if (queue.length) {
+		crawl(queue.pop());
+	}
+}
 
-	Object.keys(cluster.workers).forEach(function(id) {
-		cluster.workers[id].on('message', function(msg) {
-			status[msg.pid] = msg;
-		});
-	});
+function printStatistics() {
+	min = 10000000000; max = -1; avg = 0; n = 0;
+	slowestUrl = '';
+	for (link in speed) {
+		n++;
+		avg += speed[link];
+		if (speed[link] < min) {
+			min = speed[link];
+		}
+		if (speed[link] > max) {
+			max = speed[link];
+			slowestUrl = link;
+		}
+	}
+	avg = avg / n;
+	console.log(n + ' pages crawled');
+	console.log(redirects + ' redirects');
+	console.log(errors + ' errors');
+	console.log('avg: ' + avg + ' min: ' + min + ' max: ' + max);
+	console.log('slowest url: ' + slowestUrl);
+}
+
+verbose = process.argv[3] && process.argv[3] == 'verbose';
+counterMax = process.argv[4] ? (process.argv[4] + 0) : counterMax; 
+simultaneous = process.argv[5] ? (process.argv[5] + 0) : simultaneous;
+if (!process.argv[2]) {
+	console.log('Usage: crawly.ls http://example.com [verbose]');
 }
 else {
-	console.log(process.env['link']);
-	crawl(process.env['link'], true);
-	setInterval(function() {
-		if (queue.length) {
-			while (numOpen < 250) {
-				crawl(queue.shift());
-			}
-		}
-	}, 1000);
+	crawl(process.argv[2], true);
 }
