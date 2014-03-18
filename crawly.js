@@ -1,139 +1,232 @@
 #!/usr/local/bin/node
-
-
 /*
 	Possible features:
 	module structure to allow callbacks
-
- */
+*/
 
 var http = require('http');
 var url = require('url');
+var events = require('events');
+var util = require('util');
 
-var domain;
-var visited = [];
-var counter = 0;
-var counterMax = 100;
-var start = {};
-var speed = {};
-var pending = 0;
-var simultaneous = 20;
-var queue = [];
-var verbose = false;
-var redirects = 0;
-var errors = 0;
+var Crawly = function() {
+	events.EventEmitter.call(this);
 
-function crawl(link, setDomain) {
-	if (visited.indexOf(link) != -1) return;
-	if (counter > counterMax) return;
-	if (pending >= simultaneous) {
-		queue.push(link);
-		return;
-	}
-
-	visited.push(link);
-	if (verbose) {
-		console.log('GET', link);
-	}
-
-	var options = url.parse(link);
-	options.headers =  { 'User-Agent' : 'Crawly/0.1' };
-	if (setDomain) {
-		domain = options.protocol + '//' + options.host;
-	}
-	var d = new Date();
-	start[link] = (d.getTime());
-	pending++;
-	var request = http.request(options, retrieve);
-	request.on('error', failure);
-	request.end();
-	counter++;
+	return this;
 }
 
-function retrieve(response) {
-	var requested = 'http://' + response.req._headers.host + (response.req.path == '/' ? '' : response.req.path);
-	var data = '';
-	response.on('data', function(chunk) {
-		data += chunk;
-	});
-	response.on('end', function() {
-		if (start[requested]) {
-			var d = new Date();
-			var time = (d.getTime()) - start[requested];
-			speed[requested] = time;
-			if (verbose || response.statusCode != 200) {
-				if (response.statusCode >= 300 && response.statusCode < 400) redirects++;
-				if (response.statusCode >= 400) errors++;
-				console.log(response.statusCode + ' ' + requested + ' ' + time + 'ms');
+Crawly.prototype = {
+	domains : [],
+	visited : [],
+	counter : 0,
+	limit : 100,
+	start : {},
+	speed : {},
+	pending : 0,
+	simultaneous : 20,
+	queue : [],
+	verbose : false,
+	redirects : 0,
+	errors : 0,
+
+	start : function() {
+		var urls = [];
+
+		for(var i = 2; i < process.argv.length; i++) {
+			if (/^(http:\/\/.*)$/i.exec(process.argv[i])) {
+				urls.push(process.argv[i]);
+				this.domains.push(process.argv[i]);
 			}
-			delete start[requested];
+			else if (match = /^simultaneous=(-[0-9]+)/i.exec(process.argv[i])) {
+				this.simultaneous = match[1];
+			}
+			else if (match = /^limit=([0-9-]+)/i.exec(process.argv[i])) {
+				this.limit = match[1];
+			}
+			else if (/^verbose$/i.exec(process.argv[i])) {
+				this.verbose = true;
+			}
 		}
+
+		for (i = 0; i < urls.length; i++) {
+			this.crawl(urls[i]);
+		}
+	},
+
+	crawl : function (link) {
+		if (this.visited.indexOf(link) != -1) return;
+		if (this.counter > this.limit) return;
+		if (this.pending >= this.simultaneous) {
+			this.queue.push(link);
+			return;
+		}
+
+		this.visited.push(link);
+		if (this.verbose) {
+			console.log('GET', link);
+		}
+
+		var req = new Request(this, link);
+		this.pending++;
+		this.counter++;
+		
+		req.on('speed', this.speed.bind(this));
+		req.on('http_redirect', this.redirect.bind(this));
+		req.on('http_error', this.error.bind(this));
+		req.on('end', this.dequeue.bind(this));
+		req.on('fail', this.dequeue.bind(this));
+		req.on('url', this.crawl.bind(this));
+		req.on('info', function(msg, code) {
+			if (!this.verbose) return;
+			console.log(code + ' ' + msg);
+		}.bind(this));
+		req.start();
+	},
+
+	dequeue : function() {
+		this.pending--;
+		if (this.queue.length) {
+			this.crawl(this.queue.pop());
+		}
+		if (this.pending == 0) {
+			this.printStatistics();
+		}
+	},
+
+	speed : function(url, time) {
+		this.speed[url] = time;
+	},
+
+	error : function(url, code) {
+		this.errors++;
+		return true;
+	},
+
+	redirect : function(url) {
+		this.redirects++;
+	},
+
+	printStatistics : function() {
+		min = 10000000000; max = -1; avg = 0; n = 0;
+		slowestUrl = '';
+		for (link in this.speed) {
+			n++;
+			avg += this.speed[link];
+			if (this.speed[link] < min) {
+				min = this.speed[link];
+			}
+			if (this.speed[link] > max) {
+				max = this.speed[link];
+				slowestUrl = link;
+			}
+		}
+		avg = avg / n;
+		console.log(n + ' pages crawled');
+		console.log(this.redirects + ' redirects');
+		console.log(this.errors + ' errors');
+		console.log('avg: ' + avg + ' min: ' + min + ' max: ' + max);
+		console.log('slowest url: ' + slowestUrl);
+	},
+
+};
+
+for (e in events.EventEmitter.prototype) {
+	if (typeof events.EventEmitter.prototype[e] == 'function') {
+		Crawly.prototype[e] = events.EventEmitter.prototype[e];
+	}
+}
+
+Request = function(crawly, link) {
+	this.url = link;
+
+	return events.EventEmitter.call(this);
+}
+
+
+Request.prototype = {
+	response : null,
+	data : '',
+
+	start : function() {
+		this.emit('start');
+
+		var options = url.parse(this.url);
+		options.keepAlive = true;
+		options.headers =  { 'User-Agent' : 'Crawly/0.1' };
+		this.start = ((new Date()).getTime());
+		var request = http.request(options, this.receive.bind(this));
+		request.on('error', this.failure.bind(this));
+		request.end();
+
+	},
+
+	receive : function(response) {
+		this.response = response;
+		response.on('data', function(chunk) {
+			this.data += chunk;
+		}.bind(this));
+		response.on('end', this.responseEnd.bind(this));
+	},
+
+	responseEnd : function() {
+		if (this.start) {
+			var d = new Date();
+			var time = (d.getTime()) - this.start;
+			this.emit('speed', this.url, time);
+			if (this.response.statusCode >= 300 && this.response.statusCode < 400) {
+				this.emit('http_redirect', this.url, this.response.statusCode);
+			}
+			else if (this.response.statusCode >= 400) {
+				this.emit('http_error', this.url, this.response.statusCode);
+			}
+			else {
+			       	this.emit('info', this.url + ' ' + time + 'ms', this.response.statusCode);
+			}
+		}
+
+		if (this.response.statusCode >= 200 && this.response.statusCode < 300) {
+			this.followLinks();
+
+			if (!/<\/body>/i.exec(this.data)) {
+				this.emit('html_error', 'Missing </body>', this.url);
+			}
+		}
+
+		this.emit('end');
+	},
+
+	followLinks : function() {
 		var regex = /a\s*href="([^"]+)"/ig;
 		var url = '';
-		while (url = regex.exec(data)) {
+		var domain = /(http:\/\/[^\/]+)/i.exec(this.url);
+		domain = domain[1];
+
+		while (url = regex.exec(this.data)) {
 			if (url[1] == '#') {
 				continue;
+			}
+			else if (url[1].substring(0, 7) != 'http://' && url[1].substring(0, 8) != 'https://') {
+				url[1] = 'http://' + this.response.req._headers.host + '/' + url[1].substring(0);
 			}
 			else if (url[1].substring(0, domain.length) != domain) {
 				continue;
 			}
-			else if (url[1].charAt(0) == '/') {
-				url[1] = domain + url[1].substring(1);
-			}
 			url[1] = url[1].replace(/(.*)#.*/, '$1');
-			crawl(url[1]);
+			this.emit('url', url[1]);
 		}
-		if (!/<\/body>/i.exec(data)) {
-			console.log('Missing </body> for ' + requested);
-			errors++;
-		}
-		dequeue();
-		if (pending == 0) {
-			printStatistics();
-		}
-	});
-}
+	},
 
-function failure(e) {
-	console.log('fail: ' + e);
-	dequeue();
-}
-
-function dequeue() {
-	pending--;
-	if (queue.length) {
-		crawl(queue.pop());
+	failure : function() {
+		console.log('fail: ' + e);
+		this.emit('fail', this.url);
 	}
 }
 
-function printStatistics() {
-	min = 10000000000; max = -1; avg = 0; n = 0;
-	slowestUrl = '';
-	for (link in speed) {
-		n++;
-		avg += speed[link];
-		if (speed[link] < min) {
-			min = speed[link];
-		}
-		if (speed[link] > max) {
-			max = speed[link];
-			slowestUrl = link;
-		}
+for (e in events.EventEmitter.prototype) {
+	if (typeof events.EventEmitter.prototype[e] == 'function') {
+		Request.prototype[e] = events.EventEmitter.prototype[e];
 	}
-	avg = avg / n;
-	console.log(n + ' pages crawled');
-	console.log(redirects + ' redirects');
-	console.log(errors + ' errors');
-	console.log('avg: ' + avg + ' min: ' + min + ' max: ' + max);
-	console.log('slowest url: ' + slowestUrl);
 }
 
-verbose = process.argv[3] && process.argv[3] == 'verbose';
-counterMax = process.argv[4] ? (process.argv[4] + 0) : counterMax; 
-simultaneous = process.argv[5] ? (process.argv[5] + 0) : simultaneous;
-if (!process.argv[2]) {
-	console.log('Usage: crawly.ls http://example.com [verbose]');
-}
-else {
-	crawl(process.argv[2], true);
-}
+var crawly = new Crawly();
+crawly.start();
