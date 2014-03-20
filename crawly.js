@@ -55,7 +55,7 @@ Crawly.prototype = {
 
 	crawl : function (link) {
 		if (this.visited.indexOf(link) != -1) return;
-		if (this.counter > this.limit) return;
+		if ((this.counter - this.limit) == 0) return;
 		if (this.pending >= this.simultaneous) {
 			this.queue.push(link);
 			return;
@@ -80,6 +80,7 @@ Crawly.prototype = {
 			if (!this.verbose) return;
 			console.log(code + ' ' + msg);
 		}.bind(this));
+
 		req.start();
 	},
 
@@ -99,6 +100,7 @@ Crawly.prototype = {
 
 	error : function(url, code) {
 		this.errors++;
+		console.log(code + ' ' + url);
 		return true;
 	},
 
