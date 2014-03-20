@@ -33,7 +33,7 @@ Crawly.prototype = {
 		var urls = [];
 
 		for(var i = 2; i < process.argv.length; i++) {
-			if (/^(http:\/\/.*)$/i.exec(process.argv[i])) {
+			if (/^(http:\/\/.*)$/i.test(process.argv[i])) {
 				urls.push(process.argv[i]);
 				this.domains.push(process.argv[i]);
 			}
@@ -43,7 +43,7 @@ Crawly.prototype = {
 			else if (match = /^limit=([0-9-]+)/i.exec(process.argv[i])) {
 				this.limit = match[1];
 			}
-			else if (/^verbose$/i.exec(process.argv[i])) {
+			else if (/^verbose$/i.test(process.argv[i])) {
 				this.verbose = true;
 			}
 		}
@@ -68,6 +68,7 @@ Crawly.prototype = {
 
 		this.pending++;
 		this.counter++;
+		if ((this.counter % 1000) == 0) console.log('Counter: ' + this.counter);
 		
 		var req = new Request(this, link);
 
@@ -89,7 +90,7 @@ Crawly.prototype = {
 
 	dequeue : function() {
 		this.pending--;
-		while (this.queue.length && !this.crawl(this.queue.pop()));
+		while (this.queue.length && !this.crawl(this.queue.shift()));
 		if (this.pending == 0) {
 			this.printStatistics();
 		}
@@ -191,7 +192,7 @@ Request.prototype = {
 		if (this.response.statusCode >= 200 && this.response.statusCode < 300) {
 			this.followLinks();
 
-			if (!/<\/body>/i.exec(this.data)) {
+			if (!/<\/body>/i.test(this.data)) {
 				this.emit('html_error', 'Missing </body>', this.url);
 			}
 		}
