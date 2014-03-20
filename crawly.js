@@ -128,6 +128,7 @@ Crawly.prototype = {
 		console.log(this.errors + ' errors');
 		console.log('avg: ' + avg + ' min: ' + min + ' max: ' + max);
 		console.log('slowest url: ' + slowestUrl);
+		console.log('queue: ' + this.queue.length);
 	},
 
 };
