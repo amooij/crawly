@@ -54,11 +54,11 @@ Crawly.prototype = {
 	},
 
 	crawl : function (link) {
-		if (this.visited.indexOf(link) != -1) return;
-		if ((this.counter - this.limit) == 0) return;
+		if (this.visited.indexOf(link) != -1) return false;
+		if ((this.counter - this.limit) == 0) return false;
 		if (this.pending >= this.simultaneous) {
 			this.queue.push(link);
-			return;
+			return true;
 		}
 
 		this.visited.push(link);
@@ -66,10 +66,11 @@ Crawly.prototype = {
 			console.log('GET', link);
 		}
 
-		var req = new Request(this, link);
 		this.pending++;
 		this.counter++;
 		
+		var req = new Request(this, link);
+
 		req.on('speed', this.speed.bind(this));
 		req.on('http_redirect', this.redirect.bind(this));
 		req.on('http_error', this.error.bind(this));
@@ -82,13 +83,13 @@ Crawly.prototype = {
 		}.bind(this));
 
 		req.start();
+
+		return true;
 	},
 
 	dequeue : function() {
 		this.pending--;
-		if (this.queue.length) {
-			this.crawl(this.queue.pop());
-		}
+		while (this.queue.length && !this.crawl(this.queue.pop()));
 		if (this.pending == 0) {
 			this.printStatistics();
 		}
@@ -219,7 +220,7 @@ Request.prototype = {
 		}
 	},
 
-	failure : function() {
+	failure : function(e) {
 		console.log('fail: ' + e);
 		this.emit('fail', this.url);
 	}
