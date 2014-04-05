@@ -15,6 +15,7 @@ var Crawly = function() {
 	return this;
 }
 
+
 Crawly.prototype = {
 	domains : [],
 	visited : [],
@@ -30,48 +31,35 @@ Crawly.prototype = {
 	errors : 0,
 
 	start : function() {
-		var urls = [];
-
-		for(var i = 2; i < process.argv.length; i++) {
-			if (/^(http:\/\/.*)$/i.test(process.argv[i])) {
-				urls.push(process.argv[i]);
-				this.domains.push(process.argv[i]);
-			}
-			else if (match = /^simultaneous=(-[0-9]+)/i.exec(process.argv[i])) {
-				this.simultaneous = match[1];
-			}
-			else if (match = /^limit=([0-9-]+)/i.exec(process.argv[i])) {
-				this.limit = match[1];
-			}
-			else if (/^verbose$/i.test(process.argv[i])) {
-				this.verbose = true;
-			}
-		}
-
-		for (i = 0; i < urls.length; i++) {
-			this.crawl(urls[i]);
+		for (i = 0; i < this.domains.length; i++) {
+			this.crawl(this.domains[i]);
 		}
 	},
 
-	crawl : function (link) {
+	addDomain : function(url) {
+		this.domains.push(url);
+	},
+
+	crawl : function (link, referer, method) {
 		if (this.visited.indexOf(link) != -1) return false;
 		if ((this.counter - this.limit) == 0) return false;
 		if (this.pending >= this.simultaneous) {
-			this.queue.push(link);
+			this.queue.push([link, referer, method]);
 			return true;
 		}
 
 		this.visited.push(link);
 		if (this.verbose) {
-			console.log('GET', link);
+			console.log(method ? method : 'GET', link, referer ? referer : '');
 		}
 
 		this.pending++;
 		this.counter++;
 		if ((this.counter % 1000) == 0) console.log('Counter: ' + this.counter);
 		
-		var req = new Request(this, link);
+		var req = new Request(this, link, referer, method);
 
+		this.emit('request', req);
 		req.on('speed', this.speed.bind(this));
 		req.on('http_redirect', this.redirect.bind(this));
 		req.on('http_error', this.error.bind(this));
@@ -90,7 +78,7 @@ Crawly.prototype = {
 
 	dequeue : function() {
 		this.pending--;
-		while (this.queue.length && !this.crawl(this.queue.shift()));
+		while (this.queue.length && !this.crawl.apply(this, this.queue.shift()));
 		if (this.pending == 0) {
 			this.printStatistics();
 		}
@@ -100,14 +88,15 @@ Crawly.prototype = {
 		this.speed[url] = time;
 	},
 
-	error : function(url, code) {
+	error : function(url, code, referer) {
 		this.errors++;
-		console.log(code + ' ' + url);
+		console.log(code + ' ' + url + ' linked on ' + referer);
 		return true;
 	},
 
-	redirect : function(url) {
+	redirect : function(url, code, referer) {
 		this.redirects++;
+		console.log(code + ' ' + url + ' linked on ' + referer);
 	},
 
 	printStatistics : function() {
@@ -141,8 +130,10 @@ for (e in events.EventEmitter.prototype) {
 	}
 }
 
-Request = function(crawly, link) {
+Request = function(crawly, link, referer, method) {
 	this.url = link;
+	this.referer = referer;
+	this.method = method ? method : 'GET';
 
 	return events.EventEmitter.call(this);
 }
@@ -158,6 +149,7 @@ Request.prototype = {
 		var options = url.parse(this.url);
 		options.keepAlive = true;
 		options.headers =  { 'User-Agent' : 'Crawly/0.1' };
+		options.method = this.method;
 		this.start = ((new Date()).getTime());
 		var request = http.request(options, this.receive.bind(this));
 		request.on('error', this.failure.bind(this));
@@ -179,17 +171,17 @@ Request.prototype = {
 			var time = (d.getTime()) - this.start;
 			this.emit('speed', this.url, time);
 			if (this.response.statusCode >= 300 && this.response.statusCode < 400) {
-				this.emit('http_redirect', this.url, this.response.statusCode);
+				this.emit('http_redirect', this.url, this.response.statusCode, this.referer);
 			}
 			else if (this.response.statusCode >= 400) {
-				this.emit('http_error', this.url, this.response.statusCode);
+				this.emit('http_error', this.url, this.response.statusCode, this.referer);
 			}
 			else {
-			       	this.emit('info', this.url + ' ' + time + 'ms', this.response.statusCode);
+			       	this.emit('info', this.url + ' ' + time + 'ms', this.response.statusCode, this.referer);
 			}
 		}
 
-		if (this.response.statusCode >= 200 && this.response.statusCode < 300) {
+		if (this.response.statusCode >= 200 && this.response.statusCode < 300 && this.method == 'GET') {
 			this.followLinks();
 
 			if (!/<\/body>/i.test(this.data)) {
@@ -197,7 +189,7 @@ Request.prototype = {
 			}
 		}
 
-		this.emit('end');
+		this.emit('end', this);
 	},
 
 	followLinks : function() {
@@ -211,13 +203,13 @@ Request.prototype = {
 				continue;
 			}
 			else if (url[1].substring(0, 7) != 'http://' && url[1].substring(0, 8) != 'https://') {
-				url[1] = 'http://' + this.response.req._headers.host + '/' + url[1].substring(0);
+				url[1] = 'http://' + this.response.req._headers.host + url[1];
 			}
 			else if (url[1].substring(0, domain.length) != domain) {
 				continue;
 			}
 			url[1] = url[1].replace(/(.*)#.*/, '$1');
-			this.emit('url', url[1]);
+			this.emit('url', url[1], this.url);
 		}
 	},
 
@@ -233,5 +225,5 @@ for (e in events.EventEmitter.prototype) {
 	}
 }
 
-var crawly = new Crawly();
-crawly.start();
+module.exports = Crawly;
+
